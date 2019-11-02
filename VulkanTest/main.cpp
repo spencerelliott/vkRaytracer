@@ -9,6 +9,7 @@
 #include <glm/mat4x4.hpp>
 
 #include <iostream>
+#include <fstream>
 #include <stdexcept>
 #include <functional>
 #include <cstdlib>
@@ -51,6 +52,23 @@ struct SwapChainSupportDetails {
 	std::vector<VkSurfaceFormatKHR> formats;
 	std::vector<VkPresentModeKHR> presentModes;
 };
+
+static std::vector<char> readFile(const std::string& filename) {
+	std::ifstream file(filename, std::ios::ate | std::ios::binary);
+
+	if (!file.is_open()) {
+		throw std::runtime_error("Could not open file");
+	}
+
+	size_t fileSize = (size_t) file.tellg();
+	std::vector<char> buffer(fileSize);
+
+	file.seekg(0);
+	file.read(buffer.data(), fileSize);
+	file.close();
+
+	return buffer;
+}
 
 VkResult CreateDebugUtilsMessengerEXT(VkInstance instance, const VkDebugUtilsMessengerCreateInfoEXT* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkDebugUtilsMessengerEXT* pDebugMessenger) {
 	auto func = (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(instance, "vkCreateDebugUtilsMessengerEXT");
@@ -242,11 +260,38 @@ private:
 		pickPhysicalDevice();
 		createLogicalDevice();
 		createSwapChain();
+		createImageViews();
+		createGraphicsPipeline();
 	}
 
 	void createSurface() {
 		if (glfwCreateWindowSurface(instance, window, nullptr, &surface) != VK_SUCCESS) {
 			throw std::runtime_error("Could not create window surface");
+		}
+	}
+
+	void pickPhysicalDevice() {
+		uint32_t deviceCount = 0;
+
+		vkEnumeratePhysicalDevices(instance, &deviceCount, nullptr);
+
+		if (deviceCount <= 0) {
+			throw std::runtime_error("Could not find a Vulkan GPU");
+		}
+
+		std::vector<VkPhysicalDevice> physicalDevices(deviceCount);
+
+		vkEnumeratePhysicalDevices(instance, &deviceCount, physicalDevices.data());
+
+		for (auto device : physicalDevices) {
+			if (isSuitableDevice(device)) {
+				physicalDevice = device;
+				break;
+			}
+		}
+
+		if (physicalDevice == VK_NULL_HANDLE) {
+			throw std::runtime_error("Could not find a suitable GPU");
 		}
 	}
 
@@ -342,6 +387,79 @@ private:
 		if (vkCreateSwapchainKHR(device, &swapCreateInfo, nullptr, &swapChain) != VK_SUCCESS) {
 			throw std::runtime_error("Could not create swapchain");
 		}
+
+		vkGetSwapchainImagesKHR(device, swapChain, &imageCount, nullptr);
+		swapChainImages.resize(imageCount);
+		vkGetSwapchainImagesKHR(device, swapChain, &imageCount, swapChainImages.data());
+
+		swapChainFormat = format.format;
+		swapChainExtent = extent;
+	}
+
+	void createImageViews() {
+		swapChainImageViews.resize(swapChainImages.size());
+
+		for (size_t i = 0; i < swapChainImages.size(); i++) {
+			VkImageViewCreateInfo imageCreateInfo = {};
+			imageCreateInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+			imageCreateInfo.image = swapChainImages[i];
+			imageCreateInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+			imageCreateInfo.format = swapChainFormat;
+
+			imageCreateInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
+			imageCreateInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
+			imageCreateInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
+			imageCreateInfo.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
+
+			imageCreateInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+			imageCreateInfo.subresourceRange.baseMipLevel = 0;
+			imageCreateInfo.subresourceRange.levelCount = 1;
+			imageCreateInfo.subresourceRange.baseArrayLayer = 0;
+			imageCreateInfo.subresourceRange.layerCount = 1;
+
+			if (vkCreateImageView(device, &imageCreateInfo, nullptr, &swapChainImageViews[i]) != VK_SUCCESS) {
+				throw std::runtime_error("Could not create image view");
+			}
+		}
+	}
+
+	void createGraphicsPipeline() {
+		auto vertShaderCode = readFile("shaders/vert.spv");
+		auto fragShaderCode = readFile("shaders/frag.spv");
+
+		VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
+		VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
+
+		VkPipelineShaderStageCreateInfo vertCreateInfo = {};
+		vertCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+		vertCreateInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
+		vertCreateInfo.module = vertShaderModule;
+		vertCreateInfo.pName = "main";
+
+		VkPipelineShaderStageCreateInfo fragCreateInfo = {};
+		fragCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+		fragCreateInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+		fragCreateInfo.module = fragShaderModule;
+		fragCreateInfo.pName = "main";
+
+		VkPipelineShaderStageCreateInfo shaderInfos[] = { vertCreateInfo, fragCreateInfo };
+
+		vkDestroyShaderModule(device, vertShaderModule, nullptr);
+		vkDestroyShaderModule(device, fragShaderModule, nullptr);
+	}
+
+	VkShaderModule createShaderModule(const std::vector<char>& code) {
+		VkShaderModuleCreateInfo moduleCreateInfo = {};
+		moduleCreateInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+		moduleCreateInfo.codeSize = code.size();
+		moduleCreateInfo.pCode = reinterpret_cast<const uint32_t*>(code.data());
+
+		VkShaderModule shaderModule;
+		if (vkCreateShaderModule(device, &moduleCreateInfo, nullptr, &shaderModule) != VK_SUCCESS)) {
+			throw std::runtime_error("Could not create shader module");
+		}
+
+		return shaderModule;
 	}
 
 	QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device) {
@@ -474,31 +592,6 @@ private:
 		return requiredExtensions.empty();
 	}
 
-	void pickPhysicalDevice() {
-		uint32_t deviceCount = 0;
-
-		vkEnumeratePhysicalDevices(instance, &deviceCount, nullptr);
-
-		if (deviceCount <= 0) {
-			throw std::runtime_error("Could not find a Vulkan GPU");
-		}
-
-		std::vector<VkPhysicalDevice> physicalDevices(deviceCount);
-
-		vkEnumeratePhysicalDevices(instance, &deviceCount, physicalDevices.data());
-
-		for (auto device : physicalDevices) {
-			if (isSuitableDevice(device)) {
-				physicalDevice = device;
-				break;
-			}
-		}
-
-		if (physicalDevice == VK_NULL_HANDLE) {
-			throw std::runtime_error("Could not find a suitable GPU");
-		}
-	}
-
 	void mainLoop() {
 		while (!glfwWindowShouldClose(window)) {
 			glfwPollEvents();
@@ -509,6 +602,10 @@ private:
 #ifdef DEBUG_BUILD
 		DestroyDebugUtilsMessengerEXT(instance, debugMessenger, nullptr);
 #endif
+
+		for (auto imageView : swapChainImageViews) {
+			vkDestroyImageView(device, imageView, nullptr);
+		}
 
 		vkDestroySwapchainKHR(device, swapChain, nullptr);
 		vkDestroyDevice(device, nullptr);
@@ -522,14 +619,28 @@ private:
 	int width;
 	int height;
 
+	VkInstance instance;
+
+	// Surfaces
 	GLFWwindow* window;
 	VkSurfaceKHR surface;
-	VkInstance instance;
+	
+	// Devices
 	VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
 	VkDevice device;
+
+	// Swap chain
 	VkSwapchainKHR swapChain;
+	std::vector<VkImage> swapChainImages;
+	std::vector<VkImageView> swapChainImageViews;
+	VkFormat swapChainFormat;
+	VkExtent2D swapChainExtent;
+
+	// Queues
 	VkQueue graphicsQueue;
 	VkQueue presentQueue;
+
+	// Debugging
 	VkDebugUtilsMessengerEXT debugMessenger;
 };
 
